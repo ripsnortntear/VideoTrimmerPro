@@ -31,7 +31,7 @@ Outputs standardized, universally compatible `.mp4` video files.
 
 1. Clone the repository:
 ```
-   git clone [https://github.com/ripsnortntear/VideoTrimmerPro.git](https://github.com/ripsnortntear/VideoTrimmerPro.git)
+   git clone https://github.com/ripsnortntear/VideoTrimmerPro.git
    cd VideoTrimmerPro
 ```
 2. Open the x64 Native Tools Command Prompt for Visual Studio.
