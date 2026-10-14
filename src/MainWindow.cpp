@@ -12,6 +12,7 @@
 #include <QProgressDialog>
 
 static QString formatMs(qint64 ms) {
+    if (ms < 0) ms = 0;
     QTime t(0, 0, 0);
     t = t.addMSecs(static_cast<int>(ms));
     return QString("%1.%2").arg(t.toString("hh:mm:ss")).arg((ms % 1000) / 100);
@@ -22,7 +23,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_player(new QMediaPlayer(this))
     , m_audioOutput(new QAudioOutput(this))
     , m_ffmpegManager(new FFmpegManager(this))
-    , m_updateChecker(new UpdateChecker("1.0.0", this)) {
+    , m_updateChecker(new UpdateChecker("1.0.1", this)) {
     setupUi();
     setupMenuBar();
     applyStyles();
@@ -30,9 +31,22 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_player->setAudioOutput(m_audioOutput);
     m_player->setVideoOutput(m_videoWidget);
+	
+	m_thumbPreview = new ThumbnailPreview(this);
+
+    connect(m_rangeSlider, &RangeSlider::handleHoverStarted, this, &MainWindow::onHandleHoverStarted);
+    connect(m_rangeSlider, &RangeSlider::handleHoverMoved, this, &MainWindow::onHandleHoverMoved);
+    connect(m_rangeSlider, &RangeSlider::handleHoverEnded, this, &MainWindow::onHandleHoverEnded);
 
     connect(m_player, &QMediaPlayer::positionChanged, this, &MainWindow::onMediaPositionChanged);
     connect(m_player, &QMediaPlayer::durationChanged, this, &MainWindow::onMediaDurationChanged);
+
+    // Scrub preview safely when handles are nudged or moved
+    connect(m_rangeSlider, &RangeSlider::handleNudged, this, [this](qint64 pos) {
+        if (m_player->duration() > 0) {
+            m_player->setPosition(pos);
+        }
+    });
 
     connect(m_updateChecker, &UpdateChecker::updateAvailable, this, &MainWindow::onUpdateAvailable);
     connect(m_updateChecker, &UpdateChecker::upToDate, this, [this](const QString &ver) {
@@ -42,15 +56,14 @@ MainWindow::MainWindow(QWidget *parent)
         QMessageBox::warning(this, "Update Check", "Unable to check for updates:\n" + err);
     });
 
-    if (m_ffmpegManager->checkFFmpegAvailability()) {
-        m_statusLabel->setText("FFmpeg detected.");
-    }
-
+    verifyOrAcquireFFmpeg();
     m_updateChecker->checkForUpdates(false);
 }
 
 MainWindow::~MainWindow() {
-    if (m_player) m_player->stop();
+    if (m_player) {
+        m_player->stop();
+    }
 }
 
 void MainWindow::setupMenuBar() {
@@ -67,8 +80,7 @@ void MainWindow::setupMenuBar() {
 
 void MainWindow::setupUi() {
     setWindowTitle("Video Trimmer Pro (Qt 6 / C++20 / FFmpeg)");
-    setWindowIcon(QIcon("app_icon.ico"));
-    resize(960, 680);
+    resize(980, 720);
 
     auto *central = new QWidget(this);
     setCentralWidget(central);
@@ -76,7 +88,6 @@ void MainWindow::setupUi() {
     rootLayout->setContentsMargins(16, 16, 16, 16);
     rootLayout->setSpacing(12);
 
-    // Header Toolbar
     auto *topLayout = new QHBoxLayout();
     m_btnOpenFile = new QPushButton("Open Video File...", this);
     connect(m_btnOpenFile, &QPushButton::clicked, this, &MainWindow::onOpenFileClicked);
@@ -84,19 +95,21 @@ void MainWindow::setupUi() {
     topLayout->addStretch();
     rootLayout->addLayout(topLayout);
 
-    // Media Preview
     m_videoWidget = new QVideoWidget(this);
-    m_videoWidget->setMinimumSize(640, 360);
+    m_videoWidget->setMinimumSize(640, 380);
+    m_videoWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_videoWidget->setStyleSheet("background-color: #000; border-radius: 4px;");
     rootLayout->addWidget(m_videoWidget, 1);
 
-    // Timeline & Scrubbing
     m_rangeSlider = new RangeSlider(this);
-    connect(m_rangeSlider, &RangeSlider::currentPosChanged, m_player, &QMediaPlayer::setPosition);
+    connect(m_rangeSlider, &RangeSlider::currentPosChanged, this, [this](qint64 pos) {
+        if (m_player->duration() > 0) {
+            m_player->setPosition(pos);
+        }
+    });
     connect(m_rangeSlider, &RangeSlider::rangeChanged, this, &MainWindow::onRangeChanged);
     rootLayout->addWidget(m_rangeSlider);
 
-    // In / Out Points Controls
     auto *controlsLayout = new QHBoxLayout();
     m_btnPlayPause = new QPushButton("Play", this);
     m_btnPlayPause->setEnabled(false);
@@ -111,10 +124,10 @@ void MainWindow::setupUi() {
     connect(m_btnSetEnd, &QPushButton::clicked, this, &MainWindow::onSetEndToCurrent);
 
     m_lblTrimPoints = new QLabel("In: 00:00:00.0 | Out: 00:00:00.0", this);
-    m_lblTrimPoints->setStyleSheet("font-weight: bold;");
+    m_lblTrimPoints->setStyleSheet("font-weight: bold; font-size: 13px;");
 
     m_lblDurationInfo = new QLabel("Selection: 00:00:00.0", this);
-    m_lblDurationInfo->setStyleSheet("color: #0D6EFD; font-weight: bold;");
+    m_lblDurationInfo->setStyleSheet("color: #0D6EFD; font-weight: bold; font-size: 13px;");
 
     controlsLayout->addWidget(m_btnPlayPause);
     controlsLayout->addWidget(m_btnSetStart);
@@ -124,7 +137,6 @@ void MainWindow::setupUi() {
     controlsLayout->addWidget(m_lblDurationInfo);
     rootLayout->addLayout(controlsLayout);
 
-    // Output Destination
     auto *destLayout = new QHBoxLayout();
     auto *destLabel = new QLabel("Output File:", this);
     destLabel->setStyleSheet("font-weight: bold;");
@@ -138,7 +150,6 @@ void MainWindow::setupUi() {
     destLayout->addWidget(m_btnBrowseOutput);
     rootLayout->addLayout(destLayout);
 
-    // Mode Selector & Execution Bar
     auto *actionLayout = new QHBoxLayout();
     auto *modeLabel = new QLabel("Cut Mode:", this);
     modeLabel->setStyleSheet("font-weight: bold;");
@@ -167,26 +178,75 @@ void MainWindow::setupUi() {
     actionLayout->addWidget(m_btnCancel);
     rootLayout->addLayout(actionLayout);
 
-    m_statusLabel = new QLabel("Drop a video file to begin.", this);
+    m_statusLabel = new QLabel("Ready.", this);
     m_statusLabel->setStyleSheet("color: #666;");
     rootLayout->addWidget(m_statusLabel);
 }
 
+void MainWindow::verifyOrAcquireFFmpeg() {
+    if (m_ffmpegManager->checkFFmpegAvailability()) {
+        m_statusLabel->setText("FFmpeg detected: " + m_ffmpegManager->getFFmpegPath());
+        return;
+    }
+
+    auto reply = QMessageBox::question(
+        this,
+        "FFmpeg Required",
+        "FFmpeg was not detected on your system.\n\n"
+        "Would you like Video Trimmer Pro to automatically download and configure FFmpeg now?",
+        QMessageBox::Yes | QMessageBox::No
+    );
+
+    if (reply != QMessageBox::Yes) {
+        m_statusLabel->setText("FFmpeg missing. Trimming is disabled until installed.");
+        m_btnStartTrim->setEnabled(false);
+        return;
+    }
+
+    auto *dlg = new QProgressDialog("Downloading FFmpeg build...", "Cancel", 0, 100, this);
+    dlg->setWindowModality(Qt::WindowModal);
+    dlg->setAutoClose(true);
+
+    connect(m_ffmpegManager, &FFmpegManager::downloadProgress, dlg, [dlg](qint64 received, qint64 total) {
+        if (total > 0) dlg->setValue(static_cast<int>((received * 100) / total));
+    });
+
+    connect(dlg, &QProgressDialog::canceled, m_ffmpegManager, &FFmpegManager::cancelDownload);
+
+    connect(m_ffmpegManager, &FFmpegManager::downloadFinished, this, [this, dlg](bool ok, const QString &err) {
+        dlg->close();
+        dlg->deleteLater();
+        if (ok) {
+            QMessageBox::information(this, "Success", "FFmpeg configured successfully.");
+            m_statusLabel->setText("FFmpeg detected: " + m_ffmpegManager->getFFmpegPath());
+            if (!m_loadedFilePath.isEmpty()) m_btnStartTrim->setEnabled(true);
+        } else {
+            QMessageBox::critical(this, "Setup Failed", "Could not configure FFmpeg:\n" + err);
+        }
+    });
+
+    m_ffmpegManager->downloadAndSetupFFmpeg();
+}
+
 void MainWindow::loadVideo(const QString &path) {
+    if (path.isEmpty() || !QFileInfo::exists(path)) return;
+
     m_loadedFilePath = path;
     m_player->stop();
-    m_player->setSource(QUrl::fromLocalFile(path));
+    m_btnPlayPause->setText("Play");
 
     QFileInfo fi(path);
     QString suggestedOut = fi.absolutePath() + "/" + fi.completeBaseName() + "_trimmed.mp4";
     m_editOutputPath->setText(suggestedOut);
 
     m_btnPlayPause->setEnabled(true);
-    m_btnPlayPause->setText("Play");
     m_btnSetStart->setEnabled(true);
     m_btnSetEnd->setEnabled(true);
-    m_btnStartTrim->setEnabled(true);
-    m_statusLabel->setText("Ready: " + fi.fileName());
+    m_btnStartTrim->setEnabled(m_ffmpegManager->checkFFmpegAvailability());
+    m_statusLabel->setText("Loaded: " + fi.fileName());
+
+    // Set source cleanly without rapid synchronous play/pause calls
+    m_player->setSource(QUrl::fromLocalFile(path));
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *event) {
@@ -223,6 +283,10 @@ void MainWindow::onPlayPauseClicked() {
         m_player->pause();
         m_btnPlayPause->setText("Play");
     } else {
+        // If playhead is at or past end trim handle, wrap around to start point
+        if (m_player->position() >= m_rangeSlider->endPos()) {
+            m_player->setPosition(m_rangeSlider->startPos());
+        }
         m_player->play();
         m_btnPlayPause->setText("Pause");
     }
@@ -230,11 +294,19 @@ void MainWindow::onPlayPauseClicked() {
 
 void MainWindow::onMediaPositionChanged(qint64 position) {
     m_rangeSlider->setCurrentPos(position);
+
+    // Pause automatically if playback passes the end trim point
+    if (m_player->playbackState() == QMediaPlayer::PlayingState && position >= m_rangeSlider->endPos()) {
+        m_player->pause();
+        m_btnPlayPause->setText("Play");
+    }
 }
 
 void MainWindow::onMediaDurationChanged(qint64 duration) {
-    m_rangeSlider->setRange(0, duration);
-    updateTimestampLabels();
+    if (duration > 0) {
+        m_rangeSlider->setRange(0, duration);
+        updateTimestampLabels();
+    }
 }
 
 void MainWindow::onSetStartToCurrent() {
@@ -259,10 +331,24 @@ void MainWindow::updateTimestampLabels() {
 }
 
 void MainWindow::onStartTrimClicked() {
+    if (!m_ffmpegManager->checkFFmpegAvailability()) {
+        verifyOrAcquireFFmpeg();
+        return;
+    }
+
     QString outPath = m_editOutputPath->text().trimmed();
     if (outPath.isEmpty()) {
         QMessageBox::warning(this, "Missing Path", "Please specify an output file destination.");
         return;
+    }
+
+    if (QFileInfo::exists(outPath)) {
+        auto ans = QMessageBox::question(
+            this, "Overwrite?",
+            "The output file already exists. Overwrite it?",
+            QMessageBox::Yes | QMessageBox::No
+        );
+        if (ans != QMessageBox::Yes) return;
     }
 
     m_player->stop();
@@ -272,6 +358,7 @@ void MainWindow::onStartTrimClicked() {
     m_btnCancel->setEnabled(true);
     m_btnOpenFile->setEnabled(false);
     m_comboMode->setEnabled(false);
+    m_progressBar->setValue(0);
 
     if (m_trimEngine) m_trimEngine->deleteLater();
     m_trimEngine = new TrimEngine(m_ffmpegManager->getFFmpegPath(), this);
@@ -314,7 +401,7 @@ void MainWindow::onAboutTriggered() {
         "About Video Trimmer Pro",
         QString("<h3>Video Trimmer Pro v%1</h3>"
                 "<p>Built with C++20 and Qt 6.</p>"
-                "<p>Lossless and frame-accurate video trimming powered by FFmpeg.</p>")
+                "<p>Fast lossless and frame-accurate video trimming utility.</p>")
                 .arg(m_updateChecker->getCurrentVersion())
     );
 }
@@ -346,6 +433,74 @@ void MainWindow::onUpdateAvailable(const QString &newVersion, const QString &rel
     });
 
     m_updateChecker->downloadAndInstallUpdate(downloadUrl, QString("VideoTrimmerPro_Setup_%1.exe").arg(newVersion));
+}
+
+void MainWindow::onHandleHoverStarted(qint64 pos, QPoint globalPos, const QString &name) {
+    Q_UNUSED(name);
+    if (m_loadedFilePath.isEmpty()) return;
+
+    int popupWidth = 172;
+    int popupHeight = 125;
+    m_thumbPreview->move(globalPos.x() - (popupWidth / 2), globalPos.y() - popupHeight - 8);
+    m_thumbPreview->show();
+    fetchThumbnail(pos);
+}
+
+void MainWindow::onHandleHoverMoved(qint64 pos, QPoint globalPos) {
+    if (!m_thumbPreview->isVisible() || m_loadedFilePath.isEmpty()) return;
+
+    int popupWidth = 172;
+    int popupHeight = 125;
+    m_thumbPreview->move(globalPos.x() - (popupWidth / 2), globalPos.y() - popupHeight - 8);
+    fetchThumbnail(pos);
+}
+
+void MainWindow::onHandleHoverEnded() {
+    if (m_thumbPreview) {
+        m_thumbPreview->hide();
+    }
+}
+
+void MainWindow::fetchThumbnail(qint64 posMs) {
+    if (m_loadedFilePath.isEmpty() || !m_ffmpegManager->checkFFmpegAvailability()) return;
+
+    m_pendingThumbMs = posMs;
+
+    if (m_thumbProcess && m_thumbProcess->state() != QProcess::NotRunning) {
+        return; // Don't queue up multiple processes; will process m_pendingThumbMs once finished
+    }
+
+    if (!m_thumbProcess) {
+        m_thumbProcess = new QProcess(this);
+        connect(m_thumbProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                this, [this](int exitCode, QProcess::ExitStatus) {
+            if (exitCode == 0 && m_thumbProcess) {
+                QByteArray data = m_thumbProcess->readAllStandardOutput();
+                QPixmap pix;
+                if (pix.loadFromData(data, "JPEG")) {
+                    m_thumbPreview->updatePreview(pix, formatMs(m_pendingThumbMs));
+                }
+            }
+            if (m_thumbPreview->isVisible() && m_pendingThumbMs >= 0) {
+                qint64 next = m_pendingThumbMs;
+                m_pendingThumbMs = -1;
+                fetchThumbnail(next);
+            }
+        });
+    }
+
+    double sec = static_cast<double>(posMs) / 1000.0;
+    QStringList args = {
+        "-ss", QString::number(sec, 'f', 3),
+        "-i", m_loadedFilePath,
+        "-vframes", "1",
+        "-vf", "scale=160:-1",
+        "-f", "image2pipe",
+        "-vcodec", "mjpeg",
+        "-"
+    };
+
+    m_thumbProcess->start(m_ffmpegManager->getFFmpegPath(), args);
 }
 
 void MainWindow::applyStyles() {

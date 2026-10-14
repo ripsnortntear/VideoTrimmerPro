@@ -26,20 +26,18 @@ void TrimEngine::startTrim(const QString &inputFile, const QString &outputFile,
     if (m_process) m_process->deleteLater();
     m_process = new QProcess(this);
 
-    auto msToTimeStr = [](qint64 ms) {
-        QTime t(0, 0, 0);
-        t = t.addMSecs(static_cast<int>(ms));
-        return QString("%1.%2").arg(t.toString("hh:mm:ss")).arg(ms % 1000, 3, 10, QChar('0'));
-    };
+    // Format timestamps as standard seconds.milliseconds (e.g., "12.350")
+    double startSec = static_cast<double>(startMs) / 1000.0;
+    double durationSec = static_cast<double>(m_targetDurationMs) / 1000.0;
 
-    QString startStr = msToTimeStr(startMs);
-    QString durationStr = msToTimeStr(m_targetDurationMs);
+    QString startStr = QString::number(startSec, 'f', 3);
+    QString durationStr = QString::number(durationSec, 'f', 3);
 
     QStringList args;
     args << "-y";
 
     if (mode == TrimMode::LosslessStreamCopy) {
-        // Fast seek before -i for rapid stream copying
+        // Fast seek before input + stream copy with zero timestamp normalization
         args << "-ss" << startStr
              << "-i" << inputFile
              << "-t" << durationStr
@@ -49,7 +47,7 @@ void TrimEngine::startTrim(const QString &inputFile, const QString &outputFile,
              << outputFile;
         emit statusUpdated("Performing instant lossless cut...");
     } else {
-        // Accurate seek with re-encoding
+        // Precise seek + full transcode
         args << "-ss" << startStr
              << "-i" << inputFile
              << "-t" << durationStr
@@ -80,7 +78,9 @@ void TrimEngine::startTrim(const QString &inputFile, const QString &outputFile,
             emit progressUpdated(100);
             emit trimFinished(true, QString());
         } else {
-            emit trimFinished(false, QString("Trim failed with exit code %1.").arg(exitCode));
+            QString errOutput;
+            if (m_process) errOutput = QString::fromUtf8(m_process->readAllStandardError());
+            emit trimFinished(false, QString("FFmpeg exited with code %1:\n%2").arg(exitCode).arg(errOutput.right(400)));
         }
     });
 

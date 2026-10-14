@@ -12,6 +12,7 @@
 
 #include "RangeSlider.h"
 #include "FFmpegManager.h"
+#include "ThumbnailPreview.h"
 #include "TrimEngine.h"
 #include "UpdateChecker.h"
 
@@ -37,7 +38,10 @@ private slots:
     void onRangeChanged(qint64 start, qint64 end);
     void onStartTrimClicked();
     void onCancelClicked();
-
+    void onHandleHoverStarted(qint64 pos, QPoint globalPos, const QString &name);
+    void onHandleHoverMoved(qint64 pos, QPoint globalPos);
+    void onHandleHoverEnded();
+    void fetchThumbnail(qint64 posMs);
     void onCheckForUpdatesTriggered();
     void onAboutTriggered();
     void onUpdateAvailable(const QString &newVersion, const QString &releaseNotes, const QString &downloadUrl);
@@ -48,7 +52,11 @@ private:
     void applyStyles();
     void loadVideo(const QString &path);
     void updateTimestampLabels();
+    void verifyOrAcquireFFmpeg(); // <-- Declared here
 
+    ThumbnailPreview *m_thumbPreview{nullptr};
+    QProcess *m_thumbProcess{nullptr};
+    qint64 m_pendingThumbMs{-1};
     QMediaPlayer *m_player{nullptr};
     QAudioOutput *m_audioOutput{nullptr};
     QVideoWidget *m_videoWidget{nullptr};

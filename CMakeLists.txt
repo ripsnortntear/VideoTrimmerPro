@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(VideoTrimmer LANGUAGES CXX)
+project(VideoTrimmer LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,19 +15,22 @@ find_package(Qt6 REQUIRED COMPONENTS
     Network
 )
 
+set(APP_ICON_RESOURCE "${CMAKE_CURRENT_SOURCE_DIR}/app.rc")
+
 add_executable(VideoTrimmer WIN32
     src/main.cpp
     src/MainWindow.h
     src/MainWindow.cpp
     src/RangeSlider.h
     src/RangeSlider.cpp
+    src/ThumbnailPreview.h   # <-- Add this line
     src/TrimEngine.h
     src/TrimEngine.cpp
     src/FFmpegManager.h
     src/FFmpegManager.cpp
     src/UpdateChecker.h
     src/UpdateChecker.cpp
-    app.rc
+    ${APP_ICON_RESOURCE}
 )
 
 target_link_libraries(VideoTrimmer PRIVATE
